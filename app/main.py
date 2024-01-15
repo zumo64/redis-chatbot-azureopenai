@@ -22,7 +22,7 @@ from redisvl.index import SearchIndex
 from redisvl.vectorize.text import OpenAITextVectorizer
 import tiktoken #required for OpenAI
 
-from langchain.chat_models import AzureChatOpenAI
+from langchain.chat_models import ChatOpenAI
 from langchain.document_loaders import PyPDFLoader
 from langchain.memory import ConversationBufferMemory
 from langchain.memory.chat_message_histories import RedisChatMessageHistory
@@ -65,15 +65,15 @@ def configure_retriever(path):
     )
     splits = text_splitter.split_documents(docs)
     # Create embeddings and store in vectordb
-    # Implictly relies on env var see https://python.langchain.com/docs/integrations/text_embedding/azureopenai
-    embeddings = OpenAIEmbeddings(deployment=config.OPENAI_AZURE_EMBEDDING_DEPLOYMENT)
+    # Implictly relies on env var see https://python.langchain.com/docs/integrations/text_embedding/openai
+    embeddings = OpenAIEmbeddings(openai_api_key=config.OPENAI_API_KEY,model=config.OPENAI_EMBEDDING_DEPLOYMENT)
     
 
     # Check if not already vectorized (currently at path level, not at path/file level)
     embeddingsDone = redisclient.Redis.from_url(config.REDIS_URL)
     embeddingsDoneForDoc = embeddingsDone.sismember("doc:chatbot:path", path)
     if not embeddingsDoneForDoc:
-        # Azure OpenAI limit inputs at 16 for now
+        #  OpenAI limit inputs at 16 for now
         vectordb = None
         for splitN in chunker(splits, 16):
             if vectordb == None:
@@ -125,18 +125,18 @@ def configure_retriever(path):
 
     # Define retriever
     retriever = vectordb.as_retriever(search_kwargs={"k": config.RETRIEVE_TOP_K})
-    tool = create_retriever_tool(retriever, "search_chevy_manual", "Searches and returns snippets from the Chevy Colorado 2022 car manual.")
+    tool = create_retriever_tool(retriever, "search_manual", "Searches and returns snippets.")
     return tool
 
 
 @st.cache_resource()
 def configure_cache():
     """Set up the Redis LLMCache built with OpenAI Text Embeddings"""
-    llmcache_embeddings = OpenAITextVectorizer(
-        model=config.OPENAI_AZURE_EMBEDDING_DEPLOYMENT,
-        api_config={"api_key": config.OPENAI_API_KEY}
-    )
 
+    llmcache_embeddings = OpenAITextVectorizer(
+        model=config.OPENAI_EMBEDDING_DEPLOYMENT,
+        api_config={"api_key": config.OPENAI_API_KEY }
+    )
     # https://github.com/RedisVentures/redisvl/blob/10c192d2ab41a0aea330eea43266f12c8afbf2a3/redisvl/llmcache/semantic.py#L13
     # Defaults to 768 dimensions but we have 1536
     schema = {
@@ -158,7 +158,6 @@ def configure_cache():
     cache = SearchIndex.from_dict(schema)
     cache.connect(config.REDIS_URL)
     cache.create(overwrite=True)
-
     return SemanticCache(
         redis_url=config.REDIS_URL,
         threshold=config.LLMCACHE_THRESHOLD, # semantic similarity threshold
@@ -171,10 +170,10 @@ def configure_agent(chat_memory, tools: list):
     memory = ConversationBufferMemory(
         memory_key="chat_history", chat_memory=chat_memory, return_messages=True
     )
-    chatLLM = AzureChatOpenAI(
-        deployment_name=config.OPENAI_AZURE_LLM_DEPLOYMENT
+    chatLLM = ChatOpenAI(
+        openai_api_key=config.OPENAI_API_KEY,model= config.OPENAI_LLM_DEPLOYMENT
     )
-    PREFIX = """"You are a friendly AI assistant that can help you understand your Chevy 2022 Colorado vehicle based on the provided PDF car manual. Users can ask questions of your manual! You should not make anything up."""
+    PREFIX = """"You are a friendly AI assistant that will answer questions provided PDF files provided. Users can ask questions about the manuals provided only! You should not make anything up."""
 
     FORMAT_INSTRUCTIONS = """You have access to the following tools:
 
@@ -212,6 +211,7 @@ def configure_agent(chat_memory, tools: list):
         agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
         verbose=True,
         memory=memory,
+        handle_parsing_errors=True,
         agent_kwargs={
             'prefix': PREFIX,
             'format_instructions': FORMAT_INSTRUCTIONS,
@@ -257,6 +257,8 @@ def generate_response(
     return response
 
 
+
+
 def render():
     """Render the Streamlit chatbot user interface."""
     # Main Page
@@ -265,7 +267,6 @@ def render():
 
     # Setup LLMCache in Redis
     llmcache = configure_cache()
-
     # Setup Redis memory for conversation history
     msgs = RedisChatMessageHistory(
         session_id=st.session_state.session_id, url=config.REDIS_URL
@@ -313,7 +314,7 @@ and more!
             with st.chat_message(avatars[msg.type]):
                 st.markdown(msg.content)
 
-    if user_query := st.chat_input(placeholder="Ask me anything about the 2022 Chevy Colorado!"):
+    if user_query := st.chat_input(placeholder="Ask me anything about something !"):
         st.chat_message("user").write(user_query)
 
         with st.chat_message("assistant"):
@@ -327,3 +328,5 @@ and more!
 
 if __name__ == "__main__":
     render()
+
+
